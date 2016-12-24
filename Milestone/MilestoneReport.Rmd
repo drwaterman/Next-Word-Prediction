@@ -1,0 +1,253 @@
+---
+title: "Milestone Report - Data Science Specialization Capstone"
+author: "David Waterman"
+output:
+  html_document:
+    highlight: textmate
+    keep_md: yes
+#    toc: yes
+---
+
+# Introduction
+
+This project is part of the capstone of the Cousera Data Science Specialization provided by Johns Hopkins University and Swiftkey. The goal of the project is to develop a predictive text application in R that uses natural language processing to take a word or phrase as input and predict the next word in the phrase.
+
+This milestone report explains the exploratory analysis of the data files provided, and summarizes plans for creating the prediction algorithm.
+
+```{r results='hide', message=FALSE, warning=FALSE, echo=FALSE}
+library(DT)
+library(googleVis)
+library(NLP)
+library(qdap)
+library(qdapDictionaries)
+library(qdapRegex)
+library(qdapTools)
+library(rJava)
+library(RColorBrewer)
+library(RWeka)
+library(RWekajars)
+library(slam)
+library(SnowballC)
+library(stringi)
+library(stringr)
+library(tm)
+library(wordcloud)
+```
+
+# Data Processing
+
+The data set consists of four languages and three data files each. For this project we will use only the US English data files.
+
+### Loading The Dataset 
+```{r, eval=FALSE, echo=TRUE}
+fileURL <- "http://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+download.file(fileURL, destfile = "Dataset.zip", method = "curl")
+unlink(fileURL)
+unzip("Dataset.zip")
+```
+
+```{r, eval=FALSE, echo=FALSE}
+blogs <- readLines("./final/en_US/en_US.blogs.txt", encoding = "UTF-8", skipNul=TRUE)
+news <- readLines("./final/en_US/en_US.news.txt", encoding = "UTF-8", skipNul=TRUE)
+twitter <- readLines("./final/en_US/en_US.twitter.txt", encoding = "UTF-8", skipNul=TRUE)
+```
+
+### Creating a Sample
+
+The provided data files are extremely large. In order to enable faster data processing, a sample was generated from each data file. The sample was saved to a separate file for fast reuse.
+
+```{r, eval=FALSE}
+sample_twitter <- twitter[sample(1:length(twitter),5000)]
+sample_news <- news[sample(1:length(news),5000)]
+sample_blogs <- blogs[sample(1:length(blogs),5000)]
+text_sample <- c(sample_twitter,sample_news,sample_blogs)
+```
+
+```{r, eval=FALSE, echo=FALSE}
+## Save sample
+writeLines(text_sample, "./MilestoneReport/text_sample.txt")
+```
+
+```{r, eval=FALSE, echo=FALSE}
+sample_con <- file("./MilestoneReport/text_sample.txt")
+sample_data <- readLines(sample_con)
+close(sample_con)
+```
+
+# Summary Statistics
+
+```{r, eval=FALSE, echo=FALSE}
+blogs_file <- file.info("./final/en_US/en_US.blogs.txt")$size / 1024.0^2
+news_file <- file.info("./final/en_US/en_US.news.txt")$size / 1024.0^2
+twitter_file <- file.info("./final/en_US/en_US.twitter.txt")$size / 1024.0^2
+sample_file <- file.info("./MilestoneReport/text_sample.txt")$size / 1024.0^2
+
+blogs_length <- length(blogs)
+news_length <- length(news)
+twitter_length <- length(twitter)
+sample_length <- length(text_sample)
+
+blogs_words <- sum(sapply(gregexpr("\\S+", blogs), length))
+news_words <- sum(sapply(gregexpr("\\S+", news), length))
+twitter_words <- sum(sapply(gregexpr("\\S+", twitter), length))
+sample_words <- sum(sapply(gregexpr("\\S+", text_sample), length))
+```
+
+```{r, eval=FALSE, echo=FALSE}
+file_summary <- data.frame(
+        fileName = c("Blogs","News","Twitter", "Aggregated Sample"),
+        fileSize = c(round(blogs_file, digits = 2), 
+                     round(news_file,digits = 2), 
+                     round(twitter_file, digits = 2),
+                     round(sample_file, digits = 2)),
+        lineCount = c(blogs_length, news_length, twitter_length, sample_length),
+        wordCount = c(blogs_words, news_words, twitter_words, sample_length)                  
+)
+```
+
+```{r, eval=FALSE, echo=FALSE}
+colnames(file_summary) <- c("File Name", "File Size in MB", "Line Count", 
+                           "Word Count")
+
+saveRDS(file_summary, file = "./MilestoneReport/file_summary.Rda")
+```
+
+```{r, eval=TRUE, echo=FALSE}
+file_summary_df <- readRDS("./MilestoneReport/file_summary.Rda")
+```
+
+The following table shows a summary of the data files provided, and the sample file created.
+
+```{r, echo=FALSE}
+knitr::kable(head(file_summary_df, 10))
+```
+
+```{r, eval=TRUE, echo=FALSE}
+final_corpus <- readRDS("./MilestoneReport/final_corpus.RDS")
+```
+
+The word cloud below displays the most common words in the sample file.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+trigramTDM <- TermDocumentMatrix(final_corpus)
+wcloud <- as.matrix(trigramTDM)
+v <- sort(rowSums(wcloud),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+wordcloud(d$word,d$freq,
+          c(5,.3),50,
+          random.order=FALSE,
+          colors=brewer.pal(8, "YlGnBu"))
+```
+
+
+# Building A Text Corpus
+
+The text in the sample is cleaned using the tm package. The following operations are performed to the text:
+
+* Change all words to lowercase
+* Remove punctuation
+* Remove all numbers
+* Remove URLs
+* Remove stop words
+* Remove profanity
+* Remove stem words
+* Remove all white space
+
+After the cleanup, the text corpus is ready for processing.
+
+```{r, eval=FALSE, echo=TRUE}
+clean_sample <- tm_map(clean_sample,
+                      content_transformer(function(x) 
+                              iconv(x, to="UTF-8", sub="byte")))
+
+# Change to all lowercase; and remove punction, numbers, URLs, stop, profanity,
+# stem words, and blank space
+clean_sample <- tm_map(clean_sample, content_transformer(tolower), lazy = TRUE)
+clean_sample <- tm_map(clean_sample, content_transformer(removePunctuation))
+clean_sample <- tm_map(clean_sample, content_transformer(removeNumbers))
+removeURL <- function(x) gsub("http[[:alnum:]]*", "", x) 
+clean_sample <- tm_map(clean_sample, content_transformer(removeURL))
+clean_sample <- tm_map(clean_sample, stripWhitespace)
+clean_sample <- tm_map(clean_sample, removeWords, stopwords("english"))
+clean_sample <- tm_map(clean_sample, removeWords, profanity_words)
+clean_sample <- tm_map(clean_sample, stemDocument)
+clean_sample <- tm_map(clean_sample, stripWhitespace)
+
+```
+
+
+```{r, eval=FALSE, echo=FALSE}
+## Saving the final corpus
+saveRDS(clean_sample, file = "./MilestoneReport/final_corpus.RDS")
+
+final_corpus <- readRDS("./MilestoneReport/final_corpus.RDS")
+
+final_corpus_df <-data.frame(text=unlist(sapply(final_corpus,`[`, "content")), 
+                           stringsAsFactors = FALSE)
+```
+
+
+## N-Gram Tokenization
+
+In Natural Language Processing (NLP) an n-gram is a contiguous sequence of n items from a given sequence of text or speech.
+
+The following function is used to extract unigrams, bigrams and trigrams from the cleaned text corpus.
+
+```{r, eval=FALSE, echo=TRUE}
+ngramTokenizer <- function(corpus, ngram_count) {
+        ngramFunction <- NGramTokenizer(corpus, 
+                                Weka_control(min = ngram_count, max = ngram_count, 
+                                delimiters = " \\r\\n\\t.,;:\"()?!"))
+        ngramFunction <- data.frame(table(ngramFunction))
+        ngramFunction <- ngramFunction[order(ngramFunction$Freq, 
+                                             decreasing = TRUE),][1:10,]
+        colnames(ngramFunction) <- c("String","Count")
+        ngramFunction
+}
+```
+
+Using the tokenizer function to analyze the sample, the top 10 most common unigrams, bigrams, and trigrams are displayed on the graphs below.
+
+### Top Unigrams
+```{r, results="asis"}
+unigram <- readRDS("MilestoneReport/unigram.RDS")
+unigram_plot <- gvisColumnChart(unigram, "String", "Count",                  
+                            options=list(legend="none"))
+
+print(unigram_plot, "chart")
+```
+
+### Top Bigrams
+```{r, results="asis"}
+bigram <- readRDS("MilestoneReport/bigram.RDS")
+bigram_plot <- gvisColumnChart(bigram, "String", "Count",                  
+                            options=list(legend="none"))
+
+print(bigram_plot, "chart")
+```
+
+### Top Trigrams
+```{r, results="asis"}
+trigram <- readRDS("MilestoneReport/trigram.RDS")
+trigram_plot <- gvisColumnChart(trigram, "String", "Count",                  
+                            options=list(legend="none"))
+
+print(trigram_plot, "chart")
+```
+
+
+# Interesting Findings
+
++ The data files provided are very large. In total they contain over 70,000,000 words. The computer used to generate this report would generate errors in some functions when the sample size exceeded 20,000 words. Processing the data is very time consuming. The final application will need to address this issue.
+
++ There are some unexpected abbreviations and misspellings showing up in the data. The text mining algorithm would ideally make accommodations for the most common of these.
+
++ As of this report, stop words have been removed from the corpus. Stop words are words that generally do not contain significance and are filtered out. Stop words lists generally contain articles, prepositions, and words so common as to have no processing value, such as the, and, it, to, and on. However for the purposes of next word prediction stop words are necessary as many phrases contain stop words. The application should allow stop words in its text prediction.
+
+# Next Steps For The Prediction Application
+
+The next step of the capstone project is to create a prediction application. The application must be fast enough to be usable without noticeable lag to the user, and small enough to be used from a mobile device without hogging resources. 
+
+I will need to find a way to make use of the large data provided but keep the final application light. This likely means doing as much processing ahead of runtime for the user as possible. It would also be beneficial to increase the maximum n-gram length for more accurate phrase prediction. 
+
+Finally, this will all need to be executed in a Shiny webapp for the final presentation. The final application will have a simple frontend that prompts the user to enter text, and then displays the predicted next word below. I would also like to have an option that enables displaying the top 3 choices for the next word, although that is not required by the project.

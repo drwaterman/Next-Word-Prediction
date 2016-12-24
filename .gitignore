@@ -1,0 +1,15 @@
+.Rproj.user
+.Rhistory
+.RData
+
+*.log
+
+/Shiny/rsconnect/*
+
+/Presentation/rsconnect/*
+
+/Milestone/rsconnect/*
+
+*.history
+
+*.history
